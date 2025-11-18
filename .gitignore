@@ -1,0 +1,35 @@
+# Entornos virtuales
+.venv/
+env/
+venv/
+
+# Archivos de Python generados automáticamente
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Carpetas de build o salida
+_output/
+build/
+dist/
+*.spec
+
+# Configuraciones de IDEs
+.idea/
+.vscode/
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
+
+# Archivos temporales o de pruebas
+*.tmp
+*.log
+
+# Imágenes temporales
+sample.jpg
+
+# Archivos que no quieras subir por tamaño o privacidad
+*.psd
+*.zip
