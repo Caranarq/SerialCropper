@@ -1,5 +1,5 @@
 # 📘 SerialCropper
-### *Fast, batch-oriented crop tool for manga pages and artwork*
+### *Fast, batch-oriented crop tool*
 
 **SerialCropper** is a desktop application built with **Python + PyQt5**, designed for **extremely fast, sequential cropping** of images.
 
