@@ -33,3 +33,17 @@ sample.jpg
 # Archivos que no quieras subir por tamaño o privacidad
 *.psd
 *.zip
+
+# Carpetas de procesamiento (donde se mueven las imágenes procesadas)
+_processed/
+
+# Archivos de configuración local (para no sobrescribir tus ajustes personales)
+settings.json
+custom_buttons.json
+
+# Scripts de prueba y reproducción de errores
+test_*.py
+repro_*.py
+
+# Carpetas de entorno de pruebas
+*_env/

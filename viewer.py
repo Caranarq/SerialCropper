@@ -1,599 +1,328 @@
 import os
+import json
 from datetime import datetime
-from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QSplitter, QVBoxLayout,
-    QLabel, QLineEdit, QFileDialog, QToolBar, QAction,
-    QStatusBar, QRadioButton
-)
-from PyQt5.QtGui import QPixmap, QPainter, QColor, QPen, QPainterPath
-from PyQt5.QtCore import Qt, QPointF, QRectF
+from PyQt5.QtWidgets import QMainWindow, QSplitter, QFileDialog, QWidget, QVBoxLayout, QMessageBox, QAction
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap, QKeySequence
 
+from widgets.canvas import CanvasWidget
+from widgets.metadata_panel import MetadataPanel
+from widgets.log_panel import LogPanel
+from widgets.custom_buttons_panel import CustomButtonsPanel
+from widgets.toolbar import MainToolbar
+from batch.batch_manager import BatchManager
+from core.activity_log import ActivityLog
+from core.utils import clean_filename
 
-# ============================================================
-# CANVAS: Dibuja y maneja zoom/pan/selección
-# ============================================================
-class CanvasWidget(QWidget):
-    def __init__(self, viewer):
-        super().__init__(viewer)
-        self.viewer = viewer
-
-        # Estado de imagen
-        self.pixmap_original = None
-        self.scale = 1.0
-        self.min_scale = 0.1
-        self.max_scale = 16.0
-        self.offset = QPointF(0.0, 0.0)
-
-        # Selección
-        self.selecting = False
-        self.sel_start_img = None
-        self.sel_end_img = None
-        self.selection_exists = False
-
-        # Modo de selección: "rect" o "ellipse"
-        self.select_mode = "rect"
-
-        # Pan
-        self.panning = False
-        self.pan_last_pos = None
-
-    # -----------------------------
-    # API desde el viewer
-    # -----------------------------
-    def set_pixmap(self, pixmap: QPixmap):
-        self.pixmap_original = pixmap
-        self.scale = 1.0
-        self.offset = QPointF(
-            (self.width() - pixmap.width()) / 2,
-            (self.height() - pixmap.height()) / 2,
-        )
-        self.clear_selection()
-        self.update()
-
-    def reset_view(self):
-        if not self.pixmap_original:
-            return
-        self.scale = 1.0
-        self.offset = QPointF(
-            (self.width() - self.pixmap_original.width()) / 2,
-            (self.height() - self.pixmap_original.height()) / 2,
-        )
-        self.update()
-
-    def set_select_mode(self, mode: str):
-        if mode not in ("rect", "ellipse"):
-            return
-        self.select_mode = mode
-        self.clear_selection()
-
-    # -----------------------------
-    # Helpers de coordenadas
-    # -----------------------------
-    def screen_to_image(self, pos):
-        x = (pos.x() - self.offset.x()) / self.scale
-        y = (pos.y() - self.offset.y()) / self.scale
-        return QPointF(x, y)
-
-    def image_to_screen(self, pt):
-        return QPointF(
-            pt.x() * self.scale + self.offset.x(),
-            pt.y() * self.scale + self.offset.y(),
-        )
-
-    def _selection_screen_rect(self):
-        if self.sel_start_img is None or self.sel_end_img is None:
-            return None
-        p1 = self.image_to_screen(self.sel_start_img)
-        p2 = self.image_to_screen(self.sel_end_img)
-        return QRectF(p1, p2).normalized()
-
-    # -----------------------------
-    # Paint
-    # -----------------------------
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(32, 32, 32))
-
-        if not self.pixmap_original:
-            return
-
-        # Imagen
-        painter.save()
-        painter.translate(self.offset)
-        painter.scale(self.scale, self.scale)
-        painter.drawPixmap(0, 0, self.pixmap_original)
-        painter.restore()
-
-        # Selección + oscurecido
-        if self.selection_exists and self.sel_start_img and self.sel_end_img:
-            r = self._selection_screen_rect()
-            if r is not None:
-                painter.setRenderHint(QPainter.Antialiasing, True)
-
-                dim_color = QColor(0, 0, 0, 140)
-                canvas_rect = self.rect()
-
-                # Camino oscuro global
-                dark_path = QPainterPath()
-                dark_path.addRect(QRectF(canvas_rect))
-
-                # Hueco según modo
-                hole_path = QPainterPath()
-                if self.select_mode == "ellipse":
-                    hole_path.addEllipse(r)
-                else:
-                    hole_path.addRect(r)
-
-                # Resta: todo oscuro menos el hueco
-                final_path = dark_path.subtracted(hole_path)
-                painter.fillPath(final_path, dim_color)
-
-                # Borde rojo
-                pen = QPen(QColor(255, 60, 60), 2)
-                painter.setPen(pen)
-                painter.setBrush(Qt.NoBrush)
-
-                if self.select_mode == "ellipse":
-                    painter.drawEllipse(r)
-                else:
-                    painter.drawRect(r)
-
-    # -----------------------------
-    # Mouse
-    # -----------------------------
-    def mousePressEvent(self, event):
-        if not self.pixmap_original:
-            return
-
-        if event.button() == Qt.LeftButton:
-            self.selecting = True
-            img = self.screen_to_image(event.pos())
-            self.sel_start_img = img
-            self.sel_end_img = img
-            self.selection_exists = True
-            self.update()
-
-        elif event.button() == Qt.MiddleButton:
-            self.panning = True
-            self.pan_last_pos = event.pos()
-
-    def mouseMoveEvent(self, event):
-        if not self.pixmap_original:
-            return
-
-        if self.selecting:
-            p_img = self.screen_to_image(event.pos())
-
-            # Shift = cuadrado / círculo perfecto
-            perfect = bool(event.modifiers() & Qt.ShiftModifier)
-            if perfect and self.sel_start_img is not None:
-                start_screen = self.image_to_screen(self.sel_start_img)
-                cur = event.pos()
-                dx = cur.x() - start_screen.x()
-                dy = cur.y() - start_screen.y()
-                side = max(abs(dx), abs(dy))
-                dx_sign = 1 if dx >= 0 else -1
-                dy_sign = 1 if dy >= 0 else -1
-                new_screen = QPointF(
-                    start_screen.x() + dx_sign * side,
-                    start_screen.y() + dy_sign * side,
-                )
-                p_img = self.screen_to_image(new_screen.toPoint())
-
-            self.sel_end_img = p_img
-            self.selection_exists = True
-            self.update()
-
-        elif self.panning:
-            cur = event.pos()
-            delta = cur - self.pan_last_pos
-            self.offset += QPointF(delta.x(), delta.y())
-            self.pan_last_pos = cur
-            self.update()
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.selecting = False
-        elif event.button() == Qt.MiddleButton:
-            self.panning = False
-            self.pan_last_pos = None
-
-    # -----------------------------
-    # Zoom
-    # -----------------------------
-    def wheelEvent(self, event):
-        if not self.pixmap_original:
-            return
-
-        mouse = event.pos()
-        img_x = (mouse.x() - self.offset.x()) / self.scale
-        img_y = (mouse.y() - self.offset.y()) / self.scale
-
-        if event.angleDelta().y() > 0:
-            self.scale *= 1.15
-        else:
-            self.scale /= 1.15
-
-        self.scale = max(self.min_scale, min(self.scale, self.max_scale))
-        self.offset.setX(mouse.x() - img_x * self.scale)
-        self.offset.setY(mouse.y() - img_y * self.scale)
-        self.update()
-
-    def zoom_button(self, factor):
-        if not self.pixmap_original:
-            return
-
-        center = QPointF(self.width() / 2, self.height() / 2)
-        img_x = (center.x() - self.offset.x()) / self.scale
-        img_y = (center.y() - self.offset.y()) / self.scale
-
-        self.scale *= factor
-        self.scale = max(self.min_scale, min(self.scale, self.max_scale))
-
-        self.offset.setX(center.x() - img_x * self.scale)
-        self.offset.setY(center.y() - img_y * self.scale)
-        self.update()
-
-    # -----------------------------
-    # Resize: mantener relativo al centro del canvas
-    # -----------------------------
-    def resizeEvent(self, event):
-        if self.pixmap_original and event.oldSize().isValid():
-            dw = event.size().width() - event.oldSize().width()
-            dh = event.size().height() - event.oldSize().height()
-            self.offset += QPointF(dw / 2, dh / 2)
-        super().resizeEvent(event)
-
-    # -----------------------------
-    # Crop helper
-    # -----------------------------
-    def get_cropped_qpixmap(self):
-        if not (self.selection_exists and self.sel_start_img and self.sel_end_img):
-            return None
-
-        # Bounding box en coordenadas imagen
-        r = QRectF(self.sel_start_img, self.sel_end_img).normalized()
-        left = int(max(0, r.left()))
-        top = int(max(0, r.top()))
-        right = int(min(self.pixmap_original.width(), r.right()))
-        bottom = int(min(self.pixmap_original.height(), r.bottom()))
-        w = right - left
-        h = bottom - top
-
-        if w <= 0 or h <= 0:
-            return None
-
-        # -----------------------------------
-        # MODO RECTANGULAR (sin cambios)
-        # -----------------------------------
-        if self.select_mode == "rect":
-            return self.pixmap_original.copy(left, top, w, h)
-
-        # -----------------------------------
-        # MODO ELÍPTICO (PNG con transparencia)
-        # -----------------------------------
-        # 1. Recorte rectangular base
-        src = self.pixmap_original.copy(left, top, w, h)
-
-        # 2. Pixmap de salida con alfa
-        result = QPixmap(w, h)
-        result.fill(Qt.transparent)
-
-        painter = QPainter(result)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-
-        # 3. Crear máscara elíptica
-        path = QPainterPath()
-        path.addEllipse(0, 0, w, h)
-        painter.setClipPath(path)
-
-        # 4. Dibujar imagen dentro de la máscara
-        painter.drawPixmap(0, 0, src)
-
-        painter.end()
-        return result
-
-    def clear_selection(self):
-        self.selection_exists = False
-        self.sel_start_img = None
-        self.sel_end_img = None
-        self.update()
-
-
-# ============================================================
-# IMAGE VIEWER (ventana principal + panel de metadatos)
-# ============================================================
 class ImageViewer(QMainWindow):
     def __init__(self):
         super().__init__()
-
-        self.setWindowTitle("Serial Cropper")
+        self.setWindowTitle("Serial Cropper v2.0")
         self.resize(1400, 900)
 
-        # Metadata
-        self.metadata = {
-            "artist": "",
-            "work": "",
-            "work_initials": "",
-            "page": "",
-            "timestamp": "",
-        }
-
-        # Archivos
-        self.output_dir = "_output"
-        os.makedirs(self.output_dir, exist_ok=True)
-        self.current_folder = None
-        self.current_file = None
-        self.variant_counter = 1
-
-        # Canvas
-        self.canvas = CanvasWidget(self)
-
-        # Toolbar, theme, status
-        self._build_toolbar()
+        # Core Logic
+        self.log = ActivityLog()
+        self.batch_manager = None
+        
+        # UI Setup
+        self.toolbar = MainToolbar(self)
+        self.addToolBar(self.toolbar)
+        
+        self.canvas = CanvasWidget()
+        self.meta_panel = MetadataPanel()
+        self.custom_panel = CustomButtonsPanel()
+        self.log_panel = LogPanel()
+        
         self._setup_theme()
-
-        self.status = QStatusBar()
-        self.setStatusBar(self.status)
-
-        # Panel de metadatos
-        self.meta_panel = QWidget()
-        self.meta_layout = QVBoxLayout(self.meta_panel)
-        self.meta_layout.setContentsMargins(12, 12, 12, 12)
-        self.meta_layout.setSpacing(10)
-
-        self.meta_layout.addWidget(QLabel("Artista:"))
-        self.artist_edit = QLineEdit()
-        self.meta_layout.addWidget(self.artist_edit)
-
-        self.meta_layout.addWidget(QLabel("Obra:"))
-        self.work_edit = QLineEdit()
-        self.meta_layout.addWidget(self.work_edit)
-
-        self.meta_layout.addWidget(QLabel("Página:"))
-        self.page_edit = QLineEdit()
-        self.meta_layout.addWidget(self.page_edit)
-
-        self.meta_layout.addWidget(QLabel("Fecha/Hora:"))
-        self.date_label = QLabel("")
-        self.meta_layout.addWidget(self.date_label)
-
-        # Controles de selección
-        self.meta_layout.addWidget(QLabel("Selección:"))
-        self.rect_radio = QRadioButton("Rectangular")
-        self.ellipse_radio = QRadioButton("Elíptica")
-        self.rect_radio.setChecked(True)
-        self.meta_layout.addWidget(self.rect_radio)
-        self.meta_layout.addWidget(self.ellipse_radio)
-
-        self.meta_layout.addStretch()
-
-        # Splitter
+        
+        # Layout
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.canvas)
-        splitter.addWidget(self.meta_panel)
+        
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.addWidget(self.meta_panel)
+        right_layout.addWidget(self.custom_panel)
+        right_layout.addWidget(self.log_panel)
+        right_layout.setStretch(0, 0) # Meta panel fixed
+        right_layout.setStretch(1, 0) # Custom panel fixed
+        right_layout.setStretch(2, 1) # Log panel expands
+        
+        splitter.addWidget(right_widget)
         splitter.setSizes([1100, 300])
+        
         self.setCentralWidget(splitter)
+        
+        # Connections
+        self._connect_signals()
+        
+        # Initialize state
+        self.current_metadata = {}
+        self.variant_counter = 1
+        self.session_processed_count = 0
+        
+        # Register initial custom actions
+        self.register_custom_actions()
+        
+        self._log("Application started")
+        
+        # Auto-load last session
+        self.load_settings()
 
-        # Bind metadata
-        self.artist_edit.textChanged.connect(self._update_metadata)
-        self.work_edit.textChanged.connect(self._update_metadata)
-        self.page_edit.textChanged.connect(self._update_metadata)
-
-        # Bind selección
-        self.rect_radio.toggled.connect(self._on_selection_mode_changed)
-        self.ellipse_radio.toggled.connect(self._on_selection_mode_changed)
-
-    # -----------------------------
-    # Theme
-    # -----------------------------
     def _setup_theme(self):
         self.setStyleSheet("""
-            QMainWindow {
-                background-color: #202020;
-            }
-            QToolBar {
-                background: #2a2a2a;
-                padding: 4px;
-                spacing: 6px;
-                border-bottom: 1px solid #111;
-            }
-            QToolButton {
-                background: transparent;
-                color: #f0f0f0;
-                padding: 4px 8px;
-                border: none;
-            }
-            QToolButton:hover {
-                background: #3a3a3a;
-            }
-            QToolButton:pressed {
-                background: #505050;
-            }
-            QStatusBar {
-                background: #2a2a2a;
-                color: #e0e0e0;
-            }
-            QLabel {
-                color: #e0e0e0;
-            }
-            QRadioButton {
-                color: #e0e0e0;
-            }
-            QLineEdit {
-                background: #3a3a3a;
-                color: #ffffff;
-                border: 1px solid #555;
-                padding: 4px;
-            }
+            QMainWindow { background-color: #202020; }
+            QToolBar { background: #2a2a2a; border-bottom: 1px solid #111; }
+            QToolButton { color: #f0f0f0; background: transparent; padding: 4px; }
+            QToolButton:hover { background: #3a3a3a; }
+            QLabel, QRadioButton { color: #e0e0e0; }
+            QLineEdit { background: #3a3a3a; color: #ffffff; border: 1px solid #555; padding: 4px; }
+            QScrollArea { border: none; background: transparent; }
+            QScrollArea > QWidget > QWidget { background: transparent; }
         """)
 
-    # -----------------------------
-    # Toolbar
-    # -----------------------------
-    def _build_toolbar(self):
-        tb = QToolBar("Main")
-        self.addToolBar(tb)
+    def _connect_signals(self):
+        # Toolbar
+        self.toolbar.act_open.triggered.connect(self.open_folder_dialog)
+        self.toolbar.act_zoom_in.triggered.connect(lambda: self.canvas.zoom(1.15))
+        self.toolbar.act_zoom_out.triggered.connect(lambda: self.canvas.zoom(1/1.15))
+        
+        # Fit: Always Zoom to Extents
+        self.toolbar.act_zoom_extents.triggered.connect(self.canvas.zoom_extents)
+        
+        # Zoom Sel: Zoom to Selection
+        self.toolbar.act_zoom_selection.triggered.connect(self.canvas.zoom_selection)
+        
+        # Reset: 1:1
+        self.toolbar.act_reset.triggered.connect(self.canvas.zoom_100)
+        
+        self.toolbar.act_save.triggered.connect(lambda: self.save_crop(keep=False))
+        self.toolbar.act_save_keep.triggered.connect(lambda: self.save_crop(keep=True))
+        self.toolbar.act_next.triggered.connect(self.next_image)
 
-        act_open = QAction("Open", self)
-        act_open.triggered.connect(self.open_image_dialog)
-        tb.addAction(act_open)
+        # Mode Shortcuts
+        self.toolbar.act_mode_rect.triggered.connect(lambda: self.meta_panel.set_selection_mode("rect"))
+        self.toolbar.act_mode_ellipse.triggered.connect(lambda: self.meta_panel.set_selection_mode("ellipse"))
+        
+        # Add actions to window AND canvas to ensure shortcuts work with focus
+        self.addAction(self.toolbar.act_mode_rect)
+        self.addAction(self.toolbar.act_mode_ellipse)
+        self.canvas.addAction(self.toolbar.act_mode_rect)
+        self.canvas.addAction(self.toolbar.act_mode_ellipse)
+        
+        # Also add Save/Next actions to canvas
+        self.canvas.addAction(self.toolbar.act_save)
+        self.canvas.addAction(self.toolbar.act_save_keep)
+        self.canvas.addAction(self.toolbar.act_next)
 
-        tb.addSeparator()
+        # Release Focus (Esc)
+        self.act_release_focus = QAction("Release Focus", self)
+        self.act_release_focus.setShortcut("Esc")
+        self.act_release_focus.triggered.connect(self.canvas.setFocus)
+        self.addAction(self.act_release_focus)
 
-        act_zoom_in = QAction("Zoom +", self)
-        act_zoom_in.triggered.connect(lambda: self.canvas.zoom_button(1.15))
-        tb.addAction(act_zoom_in)
+        # Metadata
+        self.meta_panel.metadata_changed.connect(self.update_metadata)
+        self.meta_panel.selection_mode_changed.connect(self.canvas.set_select_mode)
+        
+        # Custom Buttons
+        self.custom_panel.copy_requested.connect(self.custom_save_crop)
+        self.custom_panel.actions_updated.connect(self.register_custom_actions)
+        self.custom_panel.set_validator(self.check_shortcut_conflict)
+        
+        self.registered_custom_actions = []
 
-        act_zoom_out = QAction("Zoom -", self)
-        act_zoom_out.triggered.connect(lambda: self.canvas.zoom_button(1 / 1.15))
-        tb.addAction(act_zoom_out)
+    def check_shortcut_conflict(self, key_sequence_str):
+        """
+        Checks if the given key sequence string matches any existing action's shortcut.
+        Returns (is_valid, owner_name).
+        """
+        # Normalize input
+        seq = QKeySequence(key_sequence_str)
+        
+        # Check all actions in the window
+        for action in self.findChildren(QAction):
+            if action.shortcut() == seq:
+                # Found a conflict
+                return False, action.text().replace("&", "")
+                
+        return True, None
 
-        act_reset = QAction("Reset", self)
-        act_reset.triggered.connect(self.canvas.reset_view)
-        tb.addAction(act_reset)
+    def register_custom_actions(self):
+        # Remove previously registered actions to avoid duplicates/ambiguity
+        for action in self.registered_custom_actions:
+            self.removeAction(action)
+            self.canvas.removeAction(action)
+        
+        self.registered_custom_actions.clear()
+        
+        # Add new actions
+        actions = self.custom_panel.get_actions()
+        for action in actions:
+            self.addAction(action)
+            self.canvas.addAction(action)
+            self.registered_custom_actions.append(action)
 
-        tb.addSeparator()
+    def open_folder_dialog(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Batch Folder")
+        if folder:
+            self.open_folder(folder)
 
-        act_save = QAction("Save Crop", self)
-        act_save.triggered.connect(lambda: self.save_crop(False))
-        tb.addAction(act_save)
+    def open_folder(self, folder):
+        self.batch_manager = BatchManager(folder)
+        count = self.batch_manager.scan()
+        self._log(f"Batch folder loaded: {folder}")
+        self._log(f"Found {count} images in _para_procesar")
+        if count == 0:
+            QMessageBox.warning(self, "No Images", "No images found in _para_procesar subfolder.")
+        
+        self.session_processed_count = 0
+        self.load_current_image()
+        self.save_settings()
 
-        act_save_keep = QAction("Save & Keep", self)
-        act_save_keep.triggered.connect(lambda: self.save_crop(True))
-        tb.addAction(act_save_keep)
+    def load_settings(self):
+        try:
+            if os.path.exists("settings.json"):
+                with open("settings.json", "r") as f:
+                    data = json.load(f)
+                    last_folder = data.get("last_folder")
+                    if last_folder and os.path.exists(last_folder):
+                        self.open_folder(last_folder)
+        except Exception as e:
+            print(f"Error loading settings: {e}")
 
-        tb.addSeparator()
+    def save_settings(self):
+        if self.batch_manager and self.batch_manager.root_dir:
+            try:
+                data = {"last_folder": self.batch_manager.root_dir}
+                with open("settings.json", "w") as f:
+                    json.dump(data, f)
+            except Exception as e:
+                print(f"Error saving settings: {e}")
 
-        act_next = QAction("Next", self)
-        act_next.triggered.connect(self.open_next_in_folder)
-        tb.addAction(act_next)
-
-    # -----------------------------
-    # Metadata
-    # -----------------------------
-    def _update_metadata(self):
-        self.metadata["artist"] = self.artist_edit.text().strip()
-        self.metadata["work"] = self.work_edit.text().strip()
-        self.metadata["page"] = self.page_edit.text().strip()
-
-        words = self.metadata["work"].split()
-        self.metadata["work_initials"] = "".join(
-            w[0].upper() for w in words if w
-        ) if words else ""
-
-        self.metadata["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    def _build_filename_base(self):
-        def clean(s):
-            s = s.replace(" ", "_")
-            return "".join(c for c in s if c.isalnum() or c in "_-")
-
-        artist = clean(self.metadata["artist"] or "ND")
-        work_init = clean(self.metadata["work_initials"] or "ND")
-        page = clean(self.metadata["page"] or "000")
-
-        return f"{artist}_{work_init}_{page}"
-
-    # -----------------------------
-    # Cambio de modo de selección
-    # -----------------------------
-    def _on_selection_mode_changed(self):
-        if self.rect_radio.isChecked():
-            self.canvas.set_select_mode("rect")
-        elif self.ellipse_radio.isChecked():
-            self.canvas.set_select_mode("ellipse")
-
-    # -----------------------------
-    # Hotkeys
-    # -----------------------------
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_R:
-            self.rect_radio.setChecked(True)
-        elif event.key() == Qt.Key_E:
-            self.ellipse_radio.setChecked(True)
-        else:
-            super().keyPressEvent(event)
-
-    # -----------------------------
-    # Carga de imagen
-    # -----------------------------
-    def open_image_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open Image", "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.webp)"
-        )
+    def load_current_image(self):
+        if not self.batch_manager:
+            return
+        
+        path = self.batch_manager.current_path()
         if path:
-            self.load_image(path)
+            self.canvas.set_pixmap(QPixmap(path))
+            self.variant_counter = 1
+            
+            # Update metadata defaults
+            filename = os.path.basename(path)
+            page = os.path.splitext(filename)[0]
+            
+            # Extract Artist and Work from path
+            # Structure: .../_para_procesar/Artist/Work/Page.ext
+            try:
+                # Get path relative to _para_procesar
+                # We need to find where _para_procesar is in the path
+                # Since batch_manager knows todo_dir, we can use relpath
+                rel_path = os.path.relpath(path, self.batch_manager.todo_dir)
+                parts = rel_path.split(os.sep)
+                
+                if len(parts) >= 3:
+                    artist = parts[0]
+                    work = parts[1]
+                    # page is parts[-1] (filename)
+                elif len(parts) == 2:
+                    artist = parts[0]
+                    work = "ND"
+                else:
+                    artist = "ND"
+                    work = "ND"
+            except ValueError:
+                # Path not relative to todo_dir (shouldn't happen in normal flow)
+                artist = "ND"
+                work = "ND"
 
-    def load_image(self, path):
-        pix = QPixmap(path)
-        if pix.isNull():
-            self.status.showMessage("Error loading image", 3000)
+            self.meta_panel.set_metadata(artist, work, page)
+            self.meta_panel.date_label.setText(datetime.now().strftime("%Y-%m-%d %H:%M"))
+            
+            # Update Window Title with Relative Path and Progress
+            remaining = len(self.batch_manager.files) if self.batch_manager else 0
+            self.setWindowTitle(f"Serial Cropper v2.0 - [{self.session_processed_count}/{remaining}] - [{rel_path}]")
+            
+            self._log(f"Loaded: {filename} ({artist} - {work})")
+        else:
+            self.canvas.set_pixmap(None) # Clear canvas?
+            self.setWindowTitle("Serial Cropper v2.0")
+            self._log("No image loaded")
+
+    def next_image(self):
+        if self.batch_manager:
+            self.session_processed_count += 1
+            self.batch_manager.mark_current_processed()
+            self.load_current_image()
+
+    def save_crop(self, keep, output_path=None):
+        crop = self.canvas.get_crop()
+        if not crop:
+            self._log("No selection to crop")
             return
+            
+        # Filename generation
+        artist = clean_filename(self.current_metadata.get("artist", "ND"))
+        if not artist: artist = "ND"
+        
+        work_raw = self.current_metadata.get("work", "")
+        words = work_raw.split()
+        work_init = "".join(w[0].upper() for w in words if w) if words else "ND"
+        work_init = clean_filename(work_init)
+        
+        page = clean_filename(self.current_metadata.get("page", "000"))
+        if not page: page = "000"
 
-        self.canvas.set_pixmap(pix)
-
-        self.current_file = path
-        self.current_folder = os.path.dirname(path)
-        self.variant_counter = 1
-
-        filename = os.path.basename(path)
-        page = os.path.splitext(filename)[0]
-        self.page_edit.setText(page)
-
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        self.date_label.setText(now)
-
-        self._update_metadata()
-        self.status.showMessage(f"Loaded: {filename}", 3000)
-
-    # -----------------------------
-    # Save crop
-    # -----------------------------
-    def save_crop(self, keep):
-        cropped = self.canvas.get_cropped_qpixmap()
-        if cropped is None:
-            self.status.showMessage("No valid selection", 2000)
-            return
-
-        base = self._build_filename_base()
+        base = f"{artist}_{work_init}_{page}"
         filename = f"{base}({self.variant_counter}).png"
-        path = os.path.join(self.output_dir, filename)
-
+        
+        # Output dir
+        if output_path:
+            out_dir = output_path
+        else:
+            out_dir = self.batch_manager.output_dir if self.batch_manager else "_output"
+            
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, filename)
+        
         while os.path.exists(path):
             self.variant_counter += 1
             filename = f"{base}({self.variant_counter}).png"
-            path = os.path.join(self.output_dir, filename)
-
-        if cropped.save(path, "PNG"):
-            self.status.showMessage(f"Saved {filename}", 3000)
+            path = os.path.join(out_dir, filename)
+            
+        # Convert to QImage to add metadata
+        image = crop.toImage()
+        
+        # Embed Metadata
+        artist = self.current_metadata.get("artist", "ND")
+        work = self.current_metadata.get("work", "ND")
+        page = self.current_metadata.get("page", "000")
+        
+        image.setText("Artist", artist)
+        image.setText("Work", work)
+        image.setText("Page", page)
+        image.setText("Software", "SerialCropper v2.0")
+            
+        if image.save(path, "PNG"):
+            self._log(f"Saved: {filename}")
             self.variant_counter += 1
             if not keep:
-                self.canvas.clear_selection()
+                self.canvas.selection.clear()
+                self.canvas.update()
+                self.next_image()
         else:
-            self.status.showMessage("Failed to save", 3000)
+            self._log("Error saving file")
+            
+    def custom_save_crop(self, path):
+        # Custom save always behaves like "Keep" (doesn't advance image)
+        self.save_crop(keep=True, output_path=path)
 
-    # -----------------------------
-    # Next
-    # -----------------------------
-    def open_next_in_folder(self):
-        if not self.current_folder or not self.current_file:
-            return
+    def update_metadata(self, data):
+        self.current_metadata = data
+        # Update date
+        self.meta_panel.date_label.setText(datetime.now().strftime("%Y-%m-%d %H:%M"))
 
-        files = sorted(
-            f for f in os.listdir(self.current_folder)
-            if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".webp"))
-        )
-        if not files:
-            return
-
-        cur = os.path.basename(self.current_file)
-        try:
-            idx = files.index(cur)
-        except ValueError:
-            idx = -1
-
-        next_idx = (idx + 1) % len(files)
-        next_path = os.path.join(self.current_folder, files[next_idx])
-        self.load_image(next_path)
+    def _log(self, msg):
+        self.log.add(msg)
+        self.log_panel.update_log(self.log.get_entries())
