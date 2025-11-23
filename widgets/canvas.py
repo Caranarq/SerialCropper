@@ -18,6 +18,50 @@ class CanvasWidget(QWidget):
         self.pixmap = None
         self.panning = False
         self.pan_last_pos = None
+        
+        self.cursor_rotate = self._create_rotate_cursor()
+
+    def _create_rotate_cursor(self):
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Draw curved arrow
+        pen = QPen(Qt.white, 2)
+        painter.setPen(pen)
+        
+        path = QPainterPath()
+        rect = QRectF(6, 6, 20, 20)
+        
+        # Arc from 0 (3 o'clock) to 270 (6 o'clock) CCW
+        path.arcMoveTo(rect, 0)
+        path.arcTo(rect, 0, 270)
+        
+        painter.drawPath(path)
+        
+        # Arrow head at the end (Bottom, pointing Right)
+        end_pt = path.currentPosition()
+        
+        painter.setBrush(Qt.white)
+        painter.setPen(Qt.NoPen)
+        
+        # Triangle pointing Right
+        # Tip at end_pt, slightly offset to align nicely
+        head = QPainterPath()
+        # Tip
+        tip = end_pt + QPointF(2, 0) 
+        head.moveTo(tip)
+        # Back Top
+        head.lineTo(tip.x() - 8, tip.y() - 4)
+        # Back Bottom
+        head.lineTo(tip.x() - 8, tip.y() + 4)
+        head.closeSubpath()
+        
+        painter.drawPath(head)
+        painter.end()
+        
+        return QCursor(pixmap)
 
     def set_pixmap(self, pixmap: QPixmap):
         self.pixmap = pixmap
@@ -216,6 +260,8 @@ class CanvasWidget(QWidget):
             self.setCursor(Qt.SizeHorCursor)
         elif hit == HitTest.INSIDE:
             self.setCursor(Qt.SizeAllCursor)
+        elif hit == HitTest.ROTATE:
+            self.setCursor(self.cursor_rotate)
         else:
             self.setCursor(Qt.ArrowCursor)
 

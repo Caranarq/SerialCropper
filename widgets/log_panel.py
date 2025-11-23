@@ -1,9 +1,9 @@
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea
+from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QLabel, QScrollArea
 from PyQt5.QtCore import Qt
 
-class LogPanel(QWidget):
+class LogPanel(QGroupBox):
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__("Log", parent)
         self.layout = QVBoxLayout(self)
         self.label = QLabel("Log started...")
         self.label.setWordWrap(True)

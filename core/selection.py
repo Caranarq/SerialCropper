@@ -25,13 +25,17 @@ class Selection:
         self.active_handle = HitTest.NONE
         self.drag_start_pos = None
         self.initial_rect = None
+        self.initial_rect = None
         self.angle = 0.0
+        
+        self.previous_state = None
 
     def set_mode(self, mode: str):
         if mode in ("rect", "ellipse"):
             self.mode = mode
 
     def start(self, pos_img: QPointF):
+        self.clear() # Save previous state if any
         self.is_dragging = True
         self.start_img = pos_img
         self.end_img = pos_img
@@ -61,11 +65,31 @@ class Selection:
         return QRectF()
     
     def clear(self):
+        if self.has_selection():
+            self.previous_state = {
+                "start_img": self.start_img,
+                "end_img": self.end_img,
+                "angle": self.angle,
+                "mode": self.mode
+            }
+            
         self.is_dragging = False
         self.start_img = None
         self.end_img = None
         self.angle = 0.0
         self.active_handle = HitTest.NONE
+        
+    def restore_previous(self):
+        if not self.previous_state:
+            return False
+            
+        state = self.previous_state
+        self.start_img = state["start_img"]
+        self.end_img = state["end_img"]
+        self.angle = state["angle"]
+        self.mode = state["mode"]
+        self.is_dragging = False
+        return True
     
     def has_selection(self):
         # Debug

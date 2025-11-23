@@ -4,8 +4,8 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QPushButton, QDialog, QLabel,
                              QLineEdit, QFileDialog, QKeySequenceEdit, QHBoxLayout, QMessageBox, QAction)
 import json
 import os
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QPushButton, QDialog, QLabel, 
-                             QLineEdit, QFileDialog, QKeySequenceEdit, QHBoxLayout, QMessageBox, QAction)
+from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QPushButton, QDialog, QLabel, 
+                             QLineEdit, QFileDialog, QKeySequenceEdit, QHBoxLayout, QMessageBox, QAction, QGridLayout)
 from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QKeySequence
 
@@ -15,7 +15,7 @@ class CustomButtonDialog(QDialog):
     def __init__(self, parent=None, validator=None):
         super().__init__(parent)
         self.validator = validator
-        self.setWindowTitle("Agregar Copia Personalizada")
+        self.setWindowTitle("Add Custom Copy")
         self.setModal(True)
         self.resize(400, 200)
         
@@ -32,12 +32,12 @@ class CustomButtonDialog(QDialog):
         layout = QVBoxLayout(self)
         
         # Name
-        layout.addWidget(QLabel("Nombre del Botón:"))
+        layout.addWidget(QLabel("Button Name:"))
         self.name_edit = QLineEdit()
         layout.addWidget(self.name_edit)
         
         # Path
-        layout.addWidget(QLabel("Carpeta de Destino:"))
+        layout.addWidget(QLabel("Destination Folder:"))
         path_layout = QHBoxLayout()
         self.path_edit = QLineEdit()
         self.browse_btn = QPushButton("...")
@@ -47,15 +47,15 @@ class CustomButtonDialog(QDialog):
         layout.addLayout(path_layout)
         
         # Shortcut
-        layout.addWidget(QLabel("Atajo de Teclado (Opcional):"))
+        layout.addWidget(QLabel("Shortcut (Optional):"))
         self.shortcut_edit = QKeySequenceEdit()
         layout.addWidget(self.shortcut_edit)
         
         # Buttons
         btn_layout = QHBoxLayout()
-        self.ok_btn = QPushButton("Guardar")
+        self.ok_btn = QPushButton("Save")
         self.ok_btn.clicked.connect(self.validate_and_accept)
-        self.cancel_btn = QPushButton("Cancelar")
+        self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addStretch()
         btn_layout.addWidget(self.cancel_btn)
@@ -63,7 +63,7 @@ class CustomButtonDialog(QDialog):
         layout.addLayout(btn_layout)
         
     def browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Seleccionar Carpeta")
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder")
         if folder:
             self.path_edit.setText(folder)
             
@@ -72,13 +72,13 @@ class CustomButtonDialog(QDialog):
         if self.validator and shortcut:
             is_valid, owner = self.validator(shortcut)
             if not is_valid:
-                QMessageBox.warning(self, "Atajo Duplicado", 
-                                  f"El atajo '{shortcut}' ya está en uso por: '{owner}'.\n"
-                                  "Por favor elige otro.")
+                QMessageBox.warning(self, "Duplicate Shortcut", 
+                                  f"Shortcut '{shortcut}' is already in use by: '{owner}'.\n"
+                                  "Please choose another.")
                 return
 
         if not self.name_edit.text() or not self.path_edit.text():
-             QMessageBox.warning(self, "Error", "Nombre y Carpeta son obligatorios.")
+             QMessageBox.warning(self, "Error", "Name and Folder are required.")
              return
              
         self.accept()
@@ -90,26 +90,26 @@ class CustomButtonDialog(QDialog):
             "shortcut": self.shortcut_edit.keySequence().toString()
         }
 
-class CustomButtonsPanel(QWidget):
+class CustomButtonsPanel(QGroupBox):
     copy_requested = pyqtSignal(str) # Emits path
     actions_updated = pyqtSignal() # Emits when actions change so main window can re-register them
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__("Custom Save", parent)
         self.validator_callback = None
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(12, 12, 12, 12)
-        self.layout.setSpacing(10)
+        self.layout = QGridLayout(self)
+        self.layout.setContentsMargins(10, 10, 10, 10)
+        self.layout.setSpacing(5)
         
         self.buttons_data = []
         self.actions = []
         
-        self.add_btn = QPushButton("Agregar copia personalizada...")
+        self.add_btn = QPushButton("Add...")
+        self.add_btn.setToolTip("Add custom copy button...")
+        self.add_btn.setStyleSheet("background-color: #2d5a88; font-weight: bold;")
         self.add_btn.clicked.connect(self.open_add_dialog)
         
-        self.layout.addWidget(self.add_btn)
-        self.layout.addStretch()
-        
+        # Initial load
         self.load_buttons()
 
     def set_validator(self, callback):
@@ -134,17 +134,6 @@ class CustomButtonsPanel(QWidget):
             print(f"Error saving custom buttons: {e}")
 
     def refresh_ui(self):
-        # Clear existing buttons (except the last one which is 'Add')
-        # Actually, simpler to rebuild layout or remove items.
-        # Let's remove all items before the add_btn
-        
-        # Remove actions from self (ownership)
-        self.actions.clear()
-        
-        # Clear layout items except add_btn and stretch
-        # This is a bit tricky with addStretch. 
-        # Let's just clear everything and rebuild.
-        
         # Clear layout
         while self.layout.count():
             item = self.layout.takeAt(0)
@@ -152,13 +141,30 @@ class CustomButtonsPanel(QWidget):
             if widget:
                 widget.setParent(None)
         
-        # Re-add buttons
-        for data in self.buttons_data:
-            self._create_button_ui(data)
+        self.actions.clear()
+        
+        # Add "Add" button at 0,0
+        self.layout.addWidget(self.add_btn, 0, 0)
+        
+        # Add custom buttons
+        # Grid logic: 3 columns.
+        # Index 0 is taken by Add button.
+        # So custom buttons start at index 1.
+        
+        col_count = 3
+        
+        for i, data in enumerate(self.buttons_data):
+            grid_index = i + 1
+            row = grid_index // col_count
+            col = grid_index % col_count
             
-        # Re-add Add button and stretch
-        self.layout.addWidget(self.add_btn)
-        self.layout.addStretch()
+            btn = self._create_button_ui(data)
+            self.layout.addWidget(btn, row, col)
+            
+        # Add stretch to push everything up? 
+        # In Grid, we can set row stretch on the last row + 1
+        last_row = (len(self.buttons_data) + 1) // col_count
+        self.layout.setRowStretch(last_row + 1, 1)
         
         self.actions_updated.emit()
 
@@ -172,10 +178,8 @@ class CustomButtonsPanel(QWidget):
             text += f" ({shortcut})"
             
         btn = QPushButton(text)
-        btn.setToolTip(f"Save crop to: {path}")
+        btn.setToolTip(f"Save to: {path}\nShortcut: {shortcut}")
         btn.clicked.connect(lambda: self.copy_requested.emit(path))
-        
-        self.layout.addWidget(btn)
         
         # Create Action
         if shortcut:
@@ -183,6 +187,8 @@ class CustomButtonsPanel(QWidget):
             action.setShortcut(shortcut)
             action.triggered.connect(lambda: self.copy_requested.emit(path))
             self.actions.append(action)
+            
+        return btn
 
     def open_add_dialog(self):
         dlg = CustomButtonDialog(self, validator=self.validator_callback)

@@ -21,9 +21,10 @@ serial_cropper/
         utils.py
     widgets/
         canvas.py
+        sidebar.py
         metadata_panel.py
+        custom_buttons_panel.py
         log_panel.py
-        toolbar.py
     batch/
         batch_manager.py
     viewer.py
@@ -86,23 +87,29 @@ Delegates to:
 - Selection for drawing/hit testing
 - Cropper for export
 
+### sidebar.py
+The main right-side control panel. Orchestrates:
+- **FilePanel**: Open folder operations.
+- **MetadataPanel**: Artist, Work, Page, Date/Time.
+- **ToolsPanel**: Zoom controls, Restore Selection, Selection Mode (Rect/Ellipse).
+- **ActionsPanel**: Save & Next, Save & Keep, Skip.
+- **CustomButtonsPanel** (Custom Save): User-defined save paths with shortcuts.
+- **LogPanel**: Activity history.
+
 ### metadata_panel.py
 UI for:
 - Artist (editable)
 - Work Title (editable)
 - Page (editable or auto-loaded from filename)
-- Timestamp (auto-updated)
+- Timestamp (read-only)
+
+### custom_buttons_panel.py
+- Manages user-defined "Quick Save" buttons.
+- Persists to `custom_buttons.json`.
+- Handles "Add" dialog and shortcut validation.
 
 ### log_panel.py
 Displays recent activity log lines.
-
-### toolbar.py (optional)
-Handles buttons for:
-- Open folder
-- Next image
-- Save crop
-- Modes (rectangle/ellipse)
-- Zoom controls
 
 ## Batch Manager
 ### batch_manager.py

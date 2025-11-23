@@ -1,4 +1,6 @@
 # 📘 SerialCropper
+> 🤖 **AI Agents:** Please read [`AI_CONTEXT.md`](AI_CONTEXT.md) for technical context, architecture decisions, and session history before starting.
+
 ### *Fast, batch-oriented crop tool*
 
 **SerialCropper** is a desktop application built with **Python + PyQt5**, designed for **extremely fast, sequential cropping** of images.

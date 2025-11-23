@@ -34,7 +34,7 @@ class Viewport:
         # Calculate scale to fit rect
         scale_w = view_width / rect_img.width()
         scale_h = view_height / rect_img.height()
-        self.scale = min(scale_w, scale_h) * 0.95 # 5% margin
+        self.scale = min(scale_w, scale_h) * 0.75 # 25% margin (User requested context)
         self.scale = max(self.min_scale, min(self.scale, self.max_scale))
 
         # Center rect in view

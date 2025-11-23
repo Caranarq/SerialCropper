@@ -6,10 +6,9 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap, QKeySequence
 
 from widgets.canvas import CanvasWidget
-from widgets.metadata_panel import MetadataPanel
-from widgets.log_panel import LogPanel
-from widgets.custom_buttons_panel import CustomButtonsPanel
-from widgets.toolbar import MainToolbar
+from widgets.canvas import CanvasWidget
+from widgets.sidebar import Sidebar
+from batch.batch_manager import BatchManager
 from batch.batch_manager import BatchManager
 from core.activity_log import ActivityLog
 from core.utils import clean_filename
@@ -25,31 +24,25 @@ class ImageViewer(QMainWindow):
         self.batch_manager = None
         
         # UI Setup
-        self.toolbar = MainToolbar(self)
-        self.addToolBar(self.toolbar)
+        # UI Setup
+        # self.toolbar = MainToolbar(self) # Removed
+        # self.addToolBar(self.toolbar) # Removed
         
         self.canvas = CanvasWidget()
-        self.meta_panel = MetadataPanel()
-        self.custom_panel = CustomButtonsPanel()
-        self.log_panel = LogPanel()
+        self.sidebar = Sidebar()
+        
+        # Shortcuts helper to access panels easily
+        self.meta_panel = self.sidebar.meta_panel
+        self.custom_panel = self.sidebar.custom_panel
+        self.log_panel = self.sidebar.log_panel
         
         self._setup_theme()
         
         # Layout
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.canvas)
-        
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.addWidget(self.meta_panel)
-        right_layout.addWidget(self.custom_panel)
-        right_layout.addWidget(self.log_panel)
-        right_layout.setStretch(0, 0) # Meta panel fixed
-        right_layout.setStretch(1, 0) # Custom panel fixed
-        right_layout.setStretch(2, 1) # Log panel expands
-        
-        splitter.addWidget(right_widget)
-        splitter.setSizes([1100, 300])
+        splitter.addWidget(self.sidebar)
+        splitter.setSizes([1100, 320])
         
         self.setCentralWidget(splitter)
         
@@ -79,41 +72,65 @@ class ImageViewer(QMainWindow):
             QLineEdit { background: #3a3a3a; color: #ffffff; border: 1px solid #555; padding: 4px; }
             QScrollArea { border: none; background: transparent; }
             QScrollArea > QWidget > QWidget { background: transparent; }
+            QGroupBox { 
+                border: 1px solid #444; 
+                margin-top: 6px; 
+                padding-top: 10px; 
+                font-weight: bold;
+            }
+            QGroupBox::title { 
+                subcontrol-origin: margin; 
+                left: 10px; 
+                padding: 0 3px; 
+                color: #e0e0e0; 
+            }
         """)
 
     def _connect_signals(self):
-        # Toolbar
-        self.toolbar.act_open.triggered.connect(self.open_folder_dialog)
-        self.toolbar.act_zoom_in.triggered.connect(lambda: self.canvas.zoom(1.15))
-        self.toolbar.act_zoom_out.triggered.connect(lambda: self.canvas.zoom(1/1.15))
+        # File Panel
+        self.sidebar.file_panel.open_requested.connect(self.open_folder_dialog)
         
-        # Fit: Always Zoom to Extents
-        self.toolbar.act_zoom_extents.triggered.connect(self.canvas.zoom_extents)
+        # Tools Panel
+        self.sidebar.tools_panel.mode_changed.connect(self.canvas.set_select_mode)
+        self.sidebar.tools_panel.action_triggered.connect(self._handle_tool_action)
         
-        # Zoom Sel: Zoom to Selection
-        self.toolbar.act_zoom_selection.triggered.connect(self.canvas.zoom_selection)
+        # Actions Panel
+        self.sidebar.actions_panel.action_triggered.connect(self._handle_main_action)
         
-        # Reset: 1:1
-        self.toolbar.act_reset.triggered.connect(self.canvas.zoom_100)
+        # Release Focus (Esc)
+        self.act_release_focus = QAction("Release Focus", self)
+        self.act_release_focus.setShortcut("Esc")
+        self.act_release_focus.triggered.connect(self.canvas.setFocus)
+        self.addAction(self.act_release_focus)
         
-        self.toolbar.act_save.triggered.connect(lambda: self.save_crop(keep=False))
-        self.toolbar.act_save_keep.triggered.connect(lambda: self.save_crop(keep=True))
-        self.toolbar.act_next.triggered.connect(self.next_image)
+        # Metadata
+        self.meta_panel.metadata_changed.connect(self.update_metadata)
+        # self.meta_panel.selection_mode_changed.connect(self.canvas.set_select_mode) # Moved to ToolsPanel
+        
+        # Custom Buttons
+        self.custom_panel.copy_requested.connect(self.custom_save_crop)
+        self.custom_panel.actions_updated.connect(self.register_custom_actions)
+        self.custom_panel.set_validator(self.check_shortcut_conflict)
+        
+        self.registered_custom_actions = []
 
-        # Mode Shortcuts
-        self.toolbar.act_mode_rect.triggered.connect(lambda: self.meta_panel.set_selection_mode("rect"))
-        self.toolbar.act_mode_ellipse.triggered.connect(lambda: self.meta_panel.set_selection_mode("ellipse"))
-        
-        # Add actions to window AND canvas to ensure shortcuts work with focus
-        self.addAction(self.toolbar.act_mode_rect)
-        self.addAction(self.toolbar.act_mode_ellipse)
-        self.canvas.addAction(self.toolbar.act_mode_rect)
-        self.canvas.addAction(self.toolbar.act_mode_ellipse)
-        
-        # Also add Save/Next actions to canvas
-        self.canvas.addAction(self.toolbar.act_save)
-        self.canvas.addAction(self.toolbar.act_save_keep)
-        self.canvas.addAction(self.toolbar.act_next)
+    def _handle_tool_action(self, action):
+        if action == "fit":
+            self.canvas.zoom_extents()
+        elif action == "1:1":
+            self.canvas.zoom_100()
+        elif action == "zoom_sel":
+            self.canvas.zoom_selection()
+        elif action == "restore":
+            self.restore_selection()
+
+    def _handle_main_action(self, action):
+        if action == "save_next":
+            self.save_crop(keep=False)
+        elif action == "save_keep":
+            self.save_crop(keep=True)
+        elif action == "next":
+            self.next_image()
 
         # Release Focus (Esc)
         self.act_release_focus = QAction("Release Focus", self)
@@ -238,7 +255,8 @@ class ImageViewer(QMainWindow):
                 work = "ND"
 
             self.meta_panel.set_metadata(artist, work, page)
-            self.meta_panel.date_label.setText(datetime.now().strftime("%Y-%m-%d %H:%M"))
+            self.meta_panel.set_metadata(artist, work, page)
+            self.meta_panel.date_edit.setText(datetime.now().strftime("%Y-%m-%d %H:%M"))
             
             # Update Window Title with Relative Path and Progress
             remaining = len(self.batch_manager.files) if self.batch_manager else 0
@@ -321,8 +339,15 @@ class ImageViewer(QMainWindow):
     def update_metadata(self, data):
         self.current_metadata = data
         # Update date
-        self.meta_panel.date_label.setText(datetime.now().strftime("%Y-%m-%d %H:%M"))
+        self.meta_panel.date_edit.setText(datetime.now().strftime("%Y-%m-%d %H:%M"))
 
     def _log(self, msg):
         self.log.add(msg)
         self.log_panel.update_log(self.log.get_entries())
+
+    def restore_selection(self):
+        if self.canvas.selection.restore_previous():
+            self.canvas.update()
+            self._log("Selection restored")
+        else:
+            self._log("No previous selection to restore")
