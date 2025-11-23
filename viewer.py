@@ -132,22 +132,7 @@ class ImageViewer(QMainWindow):
         elif action == "next":
             self.next_image()
 
-        # Release Focus (Esc)
-        self.act_release_focus = QAction("Release Focus", self)
-        self.act_release_focus.setShortcut("Esc")
-        self.act_release_focus.triggered.connect(self.canvas.setFocus)
-        self.addAction(self.act_release_focus)
 
-        # Metadata
-        self.meta_panel.metadata_changed.connect(self.update_metadata)
-        self.meta_panel.selection_mode_changed.connect(self.canvas.set_select_mode)
-        
-        # Custom Buttons
-        self.custom_panel.copy_requested.connect(self.custom_save_crop)
-        self.custom_panel.actions_updated.connect(self.register_custom_actions)
-        self.custom_panel.set_validator(self.check_shortcut_conflict)
-        
-        self.registered_custom_actions = []
 
     def check_shortcut_conflict(self, key_sequence_str):
         """
